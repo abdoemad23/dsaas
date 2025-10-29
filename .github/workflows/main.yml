@@ -44,14 +44,24 @@ jobs:
         Invoke-WebRequest -Uri https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe -OutFile $installer
         Start-Process -FilePath $installer -ArgumentList "/S" -Wait
         Start-Sleep -Seconds 5
-        # start service if exists
         if (Get-Service -Name Tailscale -ErrorAction SilentlyContinue) {
           Start-Service -Name Tailscale
         }
+        # اختبار إن السيرفر يقدر يوصل لتيل سكيل
+        try {
+          Invoke-WebRequest -Uri https://login.tailscale.com -UseBasicParsing | Out-Null
+          Write-Output "✅ Internet connection works fine."
+        } catch {
+          Write-Output "⚠️ Warning: can't reach Tailscale login servers."
+        }
+
         $ts = "C:\Program Files\Tailscale\tailscale.exe"
-        # bring up tailscale (uses auth key secret)
+        Start-Sleep -Seconds 10
         $arguments = "up --authkey $env:TAILSCALE_AUTH_KEY --hostname RDP-GH --accept-routes"
         Start-Process -FilePath $ts -ArgumentList $arguments -Wait
+        Start-Sleep -Seconds 10
+        & $ts status
+
 
 
     - name: Save Tailscale IP to rdp_ip.txt and commit
