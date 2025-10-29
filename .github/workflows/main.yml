@@ -50,7 +50,7 @@ jobs:
         }
         $ts = "C:\Program Files\Tailscale\tailscale.exe"
         # bring up tailscale (uses auth key secret)
-        & $arguments = "up --authkey $env:TAILSCALE_AUTH_KEY --hostname RDP-GH --accept-routes"
+        $arguments = "up --authkey $env:TAILSCALE_AUTH_KEY --hostname RDP-GH --accept-routes"
         Start-Process -FilePath $ts -ArgumentList $arguments -Wait
 
 
