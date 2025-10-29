@@ -79,8 +79,10 @@ jobs:
         git config user.name "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
         git add $path
-        git commit -m "Update RDP Tailscale IP: $ip" || Write-Output "No changes to commit"
-        git push origin HEAD:${{ github.ref_name }} || Write-Output "Push failed or nothing to push"
+        git commit -m "Update RDP Tailscale IP: $ip"
+        if ($LASTEXITCODE -ne 0) { Write-Output "No changes to commit" }
+        git push origin HEAD:${{ github.ref_name }}
+        if ($LASTEXITCODE -ne 0) { Write-Output "Push failed or nothing to push" }
 
     - name: Keep Alive (and auto restart)
       shell: powershell
