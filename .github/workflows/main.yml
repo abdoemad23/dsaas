@@ -1,0 +1,112 @@
+
+name: RDP AutoRenew
+
+# ندي صلاحية للـ GITHUB_TOKEN يكتب في الريبو
+permissions:
+  contents: write
+  actions: write
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"  # شغّل كـ backup كل 6 ساعات لو فشل ال-restart
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360   # 6 ساعات (GitHub hosted hard limit)
+    steps:
+
+    - name: Checkout repo (so we can commit rdp_ip.txt)
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: true   # يستخدم GITHUB_TOKEN لإجراء commit
+
+    - name: Setup RDP User (fixed password Admin@123)
+      shell: powershell
+      run: |
+        $username = "runneradmin"
+        $password = "Admin@123"
+        # if user exists remove then re-create to ensure password is set
+        if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {
+          net user $username $password /delete
+        }
+        net user $username $password /add
+        net localgroup administrators $username /add
+        # enable RDP
+        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+    - name: Install Tailscale
+      shell: powershell
+      run: |
+        $installer = "tailscale-setup.exe"
+        Invoke-WebRequest -Uri https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe -OutFile $installer
+        Start-Process -FilePath $installer -ArgumentList "/S" -Wait
+        Start-Sleep -Seconds 5
+        # start service if exists
+        if (Get-Service -Name Tailscale -ErrorAction SilentlyContinue) {
+          Start-Service -Name Tailscale
+        }
+        $ts = "C:\Program Files\Tailscale\tailscale.exe"
+        # bring up tailscale (uses auth key secret)
+        & $ts up --authkey $env:TAILSCALE_AUTH_KEY --hostname "RDP-GH" --accept-routes
+
+    - name: Save Tailscale IP to rdp_ip.txt and commit
+      shell: powershell
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        $ts = "C:\Program Files\Tailscale\tailscale.exe"
+        Start-Sleep -Seconds 5
+        $ip = & $ts ip -4 2>$null
+        if (-not $ip) {
+          Write-Output "No Tailscale IP returned yet. Trying status..."
+          & $ts status
+          Start-Sleep -Seconds 5
+          $ip = & $ts ip -4 2>$null
+        }
+        if (-not $ip) { 
+          Write-Output "ERROR: Couldn't read Tailscale IP. Aborting ip-save step."
+          exit 0
+        }
+        $ip = $ip.Trim()
+        $content = "Tailscale_IP: $ip`nHostname: RDP-GH`nGeneratedAt: $(Get-Date -Format o)`n"
+        $path = "rdp_ip.txt"
+        $content | Out-File -FilePath $path -Encoding utf8
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add $path
+        git commit -m "Update RDP Tailscale IP: $ip" || Write-Output "No changes to commit"
+        git push origin HEAD:${{ github.ref_name }} || Write-Output "Push failed or nothing to push"
+
+    - name: Keep Alive (and auto restart)
+      shell: powershell
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        REPO: ${{ github.repository }}
+        WORKFLOW_ID: ${{ github.workflow }}
+      run: |
+        Write-Output "🕒 Running Keep-Alive loop..."
+        # وقت بالثواني: 5 ساعات و50 دقيقة = 21000 sec (نسبق حد الـ 6 ساعات)
+        $maxTime = 21000
+        $counter = 0
+        while ($counter -lt $maxTime) {
+            Start-Sleep -Seconds 60
+            $counter += 60
+            Write-Output "⏱️ Elapsed: $counter sec"
+        }
+        Write-Output "♻️ Triggering workflow restart before timeout..."
+        # نستخدم gh cli لو متاح (عادة موجود على runners). بديل: نستخدم REST API.
+        if (Get-Command gh -ErrorAction SilentlyContinue) {
+          gh workflow run "$env:WORKFLOW_ID" -R "$env:REPO"
+          Write-Output "✅ gh workflow run triggered."
+        } else {
+          Write-Output "gh not found, calling GitHub REST API to dispatch..."
+          $uri = "https://api.github.com/repos/$env:REPO/actions/workflows/$env:WORKFLOW_ID/dispatches"
+          $body = @{ ref = "${{ github.ref_name }}" } | ConvertTo-Json
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "gh-actions-script" }
+          Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body
+          Write-Output "✅ Dispatch API called."
+        }
+        Write-Output "Done."
